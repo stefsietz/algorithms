@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>three.js webgl - volume rendering example</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+</head>
+
+<body>
+	<script src="js/three.js"></script>
+
+	<script src="js/controls/OrbitControls.js"></script>
+
+	<script src="js/Volume.js"></script>
+	<script src="js/shaders/VolumeShader.js"></script>
+  <script src="js/shaders/ComputeShaders.js"></script>
+
+	<script src="js/WebGL.js"></script>
+  <script>
+  if(WEBGL.isWebGL2Available() === false) {
+    document.body.appendChild(WEBGL.getWebGL2ErrorMessage());
+  }
+
+  var container,
+      renderer,
+      controlledCamera,
+      simpleCamera,
+      controls,
+      material,
+      volconfig,
+      tsdfTexture3d,
+      bufferTexture,
+      plane2dMesh,
+      tsdfMaterial,
+      passThroughMaterial,
+      volumeBuffer,
+      context
+
+  init();
+
+  function init() {
+    scene = new THREE.Scene();
+
+    // Create renderer
+    var canvas = document.createElement( 'canvas' )
+    context = canvas.getContext( 'webgl2')
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, context: context } )
+    renderer.setPixelRatio( window.devicePixelRatio)
+    renderer.setSize(window.innerWidth, window.innerHeight)
+    renderer.setClearColor(new THREE.Color(0x0), 1.0)
+    document.body.appendChild(renderer.domElement)
+
+    var resScale = 2
+
+    var h = 512*resScale
+    var aspect = window.innerWidth / window.innerHeight
+    controlledCamera = new THREE.OrthographicCamera(-h*aspect/2, h*aspect/2, h/2, -h/2, 1, 1000)
+    controlledCamera.position.set(0,0,1)
+
+    controls = new THREE.OrbitControls( controlledCamera, renderer.domElement)
+    controls.addEventListener('change', renderControlledCamera)
+    controls.target.set(64*resScale,64*resScale,64*resScale)
+    controls.minZoom = 0.5
+    controls.maxZoom = 4
+    controls.update()
+
+    let volSize = 128*resScale
+
+    volumeBuffer = createTestVolume(volSize, volSize, volSize)
+
+    var texture = new THREE.DataTexture3D(volumeBuffer, volSize, volSize, volSize)
+    texture.type = THREE.FloatType;
+    texture.format = THREE.RedFormat;
+    texture.minFilter = texture.magFilter = THREE.LinearFilter
+    //texture.unpackAlignment = 1 // should probably only be used for power of two textures
+    texture.needsUpdate = true
+
+    var shader = THREE.VolumeRenderShader1
+
+    var uniforms = THREE.UniformsUtils.clone(shader.uniforms)
+
+    uniforms[ 'u_data'].value = texture
+    uniforms[ 'u_size'].value.set(volSize, volSize, volSize)
+    uniforms[ 'u_clim'].value.set(0, 1)
+    uniforms[ 'u_renderthreshold'].value = 1.0
+
+    material = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: shader.vertexShader,
+      fragmentShader: shader.fragmentShader,
+      side: THREE.BackSide
+    })
+
+    var geometry = new THREE.BoxBufferGeometry(volSize, volSize, volSize)
+    geometry.translate( volSize / 2 - 0.5, volSize / 2 - 0.5, volSize / 2 - 0.5)
+
+    var mesh = new THREE.Mesh(geometry, material)
+    //scene.add(mesh)
+    setupCompute()
+    //renderControlledCamera()
+
+    window.addEventListener('resize', onWindowResize, false)
+  }
+
+  function setupCompute(){
+
+    simpleCamera = new THREE.Camera()
+
+    let volSize = 16
+    let tex2dSize = 64
+
+    let volume = createTestVolume(volSize, volSize, volSize, 4)
+
+    tsdfTexture3d = new THREE.DataTexture3D(volume,volSize, volSize, volSize)
+    tsdfTexture3d.type = THREE.FloatType;
+    tsdfTexture3d.format = THREE.RGBAFormat;
+    tsdfTexture3d.minFilter = tsdfTexture3d.magFilter = THREE.LinearFilter
+    tsdfTexture3d.needsUpdate = true
+
+    bufferTexture = new THREE.WebGLRenderTarget( tex2dSize, tex2dSize, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, type: THREE.FloatType});
+    let fbf = bufferTexture.__webglFramebuffer
+
+    let shader = THREE.TSDFShader
+    let uniforms = THREE.UniformsUtils.clone(shader.uniforms)
+
+    uniforms[ 'u_data'].value = tsdfTexture3d
+    uniforms[ 'u_cubewidth'].value = volSize
+    uniforms[ 'u_resx'].value = tex2dSize
+    uniforms[ 'u_resy'].value = tex2dSize
+    uniforms[ 'u_tsdf'].value = volume
+
+    tsdfMaterial = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: shader.vertexShader,
+      fragmentShader: shader.fragmentShader,
+      side: THREE.FrontSide
+    })
+
+    let passThroughShader = THREE.PassThroughShader
+    uniforms = THREE.UniformsUtils.clone(passThroughShader.uniforms)
+    uniforms['u_tex'].value = bufferTexture.texture
+
+    passThroughMaterial = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: passThroughShader.vertexShader,
+      fragmentShader : passThroughShader.fragmentShader,
+    })
+
+    let geometry = new THREE.PlaneBufferGeometry(2,2)
+    plane2dMesh = new THREE.Mesh(geometry)
+    scene.add(plane2dMesh)
+
+    renderSimpleCamera()
+  }
+
+
+  function onWindowResize() {
+    renderer.setSize(window.innerWidth, window.innerHeight)
+
+    let aspect = window.innerWidth / window.innerHeight
+
+    let frustumHeight = controlledCamera.top - controlledCamera.bottom
+
+    controlledCamera.left = -frustumHeight * aspect / 2
+    controlledCamera.reight = frustumHeight * aspect / 2
+
+    controlledCamera.updateProjectionMatrix();
+
+    renderSimpleCamera()
+  }
+
+  function renderControlledCamera(){
+    renderer.clearColor()
+    renderer.setRenderTarget(null)
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+    renderer.render(scene, controlledCamera)
+
+    window.requestAnimationFrame(renderControlledCamera)
+  }
+
+  function renderSimpleCamera(){
+    renderer.clearColor()
+    plane2dMesh.material = tsdfMaterial
+    renderer.setRenderTarget(bufferTexture)
+    renderer.setViewport(bufferTexture.viewport)
+    renderer.render(scene, simpleCamera)
+
+    volumeBuffer = createZeroVolume(16, 16, 16, 4)
+    readRenderTargetPixels(bufferTexture, 0, 0, 64, 64, volumeBuffer)
+    tsdfTexture3d.data = volumeBuffer
+    tsdfTexture3d.needsUpdate = true
+
+    plane2dMesh.material = passThroughMaterial
+    renderer.setRenderTarget(null)
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
+    renderer.render(scene, simpleCamera)
+    window.requestAnimationFrame(renderSimpleCamera)
+  }
+
+  function createTestVolume(xres, yres, zres,  cres = 1)
+  {
+    let buffer = new Float32Array(xres * yres * zres * cres)
+
+    let radius = (xres/2)*0.5
+    let radius2 = radius*radius
+
+    let index = 0
+    let xmid = xres/2
+    let ymid = yres/2
+    let zmid = zres/2
+    for(let x=0; x<xres; x++){
+      for(let y=0; y<yres; y++){
+        for(let z=0; z<zres; z++){
+          let xc = x-xmid
+          let yc = y-ymid
+          let zc = z-zmid
+          let norm = xc*xc + yc*yc + zc*zc
+          for(let c=0; c<cres; c++){
+            buffer[index++] = radius-Math.sqrt(norm)
+          }
+        }
+      }
+    }
+
+    return buffer
+  }
+
+  function createZeroVolume(xres, yres, zres, cres = 1)
+  {
+    let buffer = new Float32Array(xres * yres * zres * cres)
+
+    return buffer
+  }
+
+  function readRenderTargetPixels(renderTarget, x, y, width, height, buffer){
+    if ( ! ( renderTarget instanceof THREE.WebGLRenderTarget ) ) {
+
+        console.error( 'THREE.WebGLRenderer.readRenderTargetPixels: renderTarget is not THREE.WebGLRenderTarget.' );
+        return;
+
+      }
+
+      var props = renderer.properties.get(renderTarget);
+     if (!props) return;
+     var glFramebuffer = props.__webglFramebuffer;
+
+      if ( glFramebuffer ) {
+
+        var restore = false;
+
+        currentFrameBuffer = context.getParameter(context.FRAMEBUFFER_BINDING);
+
+        if ( glFramebuffer !== currentFrameBuffer ) {
+
+          context.bindFramebuffer( context.FRAMEBUFFER, glFramebuffer );
+
+          restore = true;
+
+        }
+
+        if ( context.checkFramebufferStatus( context.FRAMEBUFFER ) === context.FRAMEBUFFER_COMPLETE ) {
+
+          context.readPixels( x, y, width, height, context.RGBA, context.FLOAT, buffer );
+
+        } else {
+
+          console.error( 'THREE.WebGLRenderer.readRenderTargetPixels: readPixels from renderTarget failed. Framebuffer not complete.' );
+
+        }
+
+        if ( restore ) {
+
+          context.bindFramebuffer( context.FRAMEBUFFER, currentFrameBuffer );
+
+        }
+
+      }
+  }
+
+	</script>
+
+</body>
