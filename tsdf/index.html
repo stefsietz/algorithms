@@ -16,30 +16,56 @@
   <script src="js/shaders/ComputeShaders.js"></script>
 
 	<script src="js/WebGL.js"></script>
+  <script src="js/stats.js"></script>
+
+  <img id="depth_img" width=640 height=360></img>
+
   <script>
   if(WEBGL.isWebGL2Available() === false) {
     document.body.appendChild(WEBGL.getWebGL2ErrorMessage());
   }
+
+	const tex2dSize = 512
+
+	const slomo = 1
 
   var container,
       renderer,
       controlledCamera,
       simpleCamera,
       controls,
-      material,
+      volumeMaterial,
       volconfig,
       tsdfTexture3d,
+      tsdfTexture3dLinear,
       bufferTexture,
       plane2dMesh,
       tsdfMaterial,
       passThroughMaterial,
+			dethGridMaterial,
       volumeBuffer,
-      context
+      context,
+      volumeMesh,
+      volumeBuffer,
+      stats,
+      frame,
+      poses,
+      depthTexture,
+      yellowMaterial,
+      volSize,
+      volRes,
+			camProxyMesh
 
   init();
 
   function init() {
+    frame = 0
+    poses = []
     scene = new THREE.Scene();
+
+    stats = new Stats();
+    stats.showPanel( 0 ); // 0: fps, 1: ms, 2: mb, 3+: custom
+    document.body.appendChild( stats.dom );
 
     // Create renderer
     var canvas = document.createElement( 'canvas' )
@@ -50,84 +76,85 @@
     renderer.setClearColor(new THREE.Color(0x0), 1.0)
     document.body.appendChild(renderer.domElement)
 
-    var resScale = 2
-
-    var h = 512*resScale
+    var h = 256
     var aspect = window.innerWidth / window.innerHeight
-    controlledCamera = new THREE.OrthographicCamera(-h*aspect/2, h*aspect/2, h/2, -h/2, 1, 1000)
+    controlledCamera = new THREE.OrthographicCamera(-h*aspect/2, h*aspect/2, h/2, -h/2, -100, 1000)
     controlledCamera.position.set(0,0,1)
 
+    volSize = 64
+    volRes = 64
+
     controls = new THREE.OrbitControls( controlledCamera, renderer.domElement)
-    controls.addEventListener('change', renderControlledCamera)
-    controls.target.set(64*resScale,64*resScale,64*resScale)
-    controls.minZoom = 0.5
-    controls.maxZoom = 4
-    controls.update()
+    //controls.target.set(volSize/2,volSize/2,volSize/2)
+    controls.minZoom = 0.1
+    controls.maxZoom = 2
 
-    let volSize = 128*resScale
+		setupVolume(volRes, volSize)
 
-    volumeBuffer = createTestVolume(volSize, volSize, volSize)
 
-    var texture = new THREE.DataTexture3D(volumeBuffer, volSize, volSize, volSize)
-    texture.type = THREE.FloatType;
-    texture.format = THREE.RedFormat;
-    texture.minFilter = texture.magFilter = THREE.LinearFilter
-    //texture.unpackAlignment = 1 // should probably only be used for power of two textures
-    texture.needsUpdate = true
-
-    var shader = THREE.VolumeRenderShader1
-
-    var uniforms = THREE.UniformsUtils.clone(shader.uniforms)
-
-    uniforms[ 'u_data'].value = texture
-    uniforms[ 'u_size'].value.set(volSize, volSize, volSize)
-    uniforms[ 'u_clim'].value.set(0, 1)
-    uniforms[ 'u_renderthreshold'].value = 1.0
-
-    material = new THREE.ShaderMaterial({
-      uniforms: uniforms,
-      vertexShader: shader.vertexShader,
-      fragmentShader: shader.fragmentShader,
-      side: THREE.BackSide
-    })
+    yellowMaterial = new THREE.MeshBasicMaterial( {color: 0xffff00, side:THREE.BackSide, wireframe: true} );
 
     var geometry = new THREE.BoxBufferGeometry(volSize, volSize, volSize)
     geometry.translate( volSize / 2 - 0.5, volSize / 2 - 0.5, volSize / 2 - 0.5)
 
-    var mesh = new THREE.Mesh(geometry, material)
-    //scene.add(mesh)
-    setupCompute()
-    //renderControlledCamera()
+    volumeMesh = new THREE.Mesh(geometry, volumeMaterial)
+    //scene.add(volumeMesh)
+    setupCompute(false)
+    animate()
+    controls.update()
+
+    var geometry = new THREE.SphereGeometry( 128, 32, 32 );
+    var sphere = new THREE.Mesh( geometry, yellowMaterial );
+    //sphere.translate(0, 0, 0)
+    //scene.add( sphere );
+
+		setupDepthPlaneMaterial()
+
+		var planeGeometry = new THREE.PlaneBufferGeometry(2, 2, 128, 128)
+		var depthPlane = new THREE.Mesh(planeGeometry, depthGridMaterial)
+		depthPlane.scale.set(64,64,64)
+		scene.add(depthPlane)
+
+		var camProxyGeometry = new THREE.BoxBufferGeometry(1/16, 1/16, 1/4)
+		camProxyMesh = new THREE.Mesh(camProxyGeometry, yellowMaterial)
+		scene.add(camProxyMesh)
+		camProxyMesh.matrixAutoUpdate = false
+
+		var axesHelper = new THREE.AxesHelper( 64 );
+		scene.add( axesHelper );
 
     window.addEventListener('resize', onWindowResize, false)
   }
 
-  function setupCompute(){
+  function setupCompute(debugplane = true){
 
     simpleCamera = new THREE.Camera()
 
-    let volSize = 16
-    let tex2dSize = 64
+    volumeBuffer = createZeroVolume(volRes, volRes, volRes, 4)
 
-    let volume = createTestVolume(volSize, volSize, volSize, 4)
-
-    tsdfTexture3d = new THREE.DataTexture3D(volume,volSize, volSize, volSize)
+    tsdfTexture3d = new THREE.DataTexture3D(volumeBuffer,volRes, volRes, volRes)
     tsdfTexture3d.type = THREE.FloatType;
     tsdfTexture3d.format = THREE.RGBAFormat;
-    tsdfTexture3d.minFilter = tsdfTexture3d.magFilter = THREE.LinearFilter
+    tsdfTexture3d.minFilter = tsdfTexture3d.magFilter = THREE.NearestFilter
     tsdfTexture3d.needsUpdate = true
 
-    bufferTexture = new THREE.WebGLRenderTarget( tex2dSize, tex2dSize, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, type: THREE.FloatType});
+    tsdfTexture3dLinear = new THREE.DataTexture3D(volumeBuffer,volRes, volRes, volRes)
+    tsdfTexture3dLinear.type = THREE.FloatType;
+    tsdfTexture3dLinear.format = THREE.RGBAFormat;
+    tsdfTexture3dLinear.minFilter = tsdfTexture3dLinear.magFilter = THREE.LinearFilter
+    tsdfTexture3dLinear.needsUpdate = true
+
+    bufferTexture = new THREE.WebGLRenderTarget( tex2dSize, tex2dSize, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, type: THREE.FloatType, format: THREE.RGBAFormat});
     let fbf = bufferTexture.__webglFramebuffer
 
     let shader = THREE.TSDFShader
     let uniforms = THREE.UniformsUtils.clone(shader.uniforms)
 
     uniforms[ 'u_data'].value = tsdfTexture3d
-    uniforms[ 'u_cubewidth'].value = volSize
+    uniforms[ 'u_cubewidth'].value = volRes
     uniforms[ 'u_resx'].value = tex2dSize
     uniforms[ 'u_resy'].value = tex2dSize
-    uniforms[ 'u_tsdf'].value = volume
+    uniforms[ 'u_tsdf'].value = volumeBuffer
 
     tsdfMaterial = new THREE.ShaderMaterial({
       uniforms: uniforms,
@@ -135,6 +162,11 @@
       fragmentShader: shader.fragmentShader,
       side: THREE.FrontSide
     })
+
+
+    let geometry = new THREE.PlaneBufferGeometry(2,2)
+    plane2dMesh = new THREE.Mesh(geometry)
+    scene.add(plane2dMesh)
 
     let passThroughShader = THREE.PassThroughShader
     uniforms = THREE.UniformsUtils.clone(passThroughShader.uniforms)
@@ -145,12 +177,6 @@
       vertexShader: passThroughShader.vertexShader,
       fragmentShader : passThroughShader.fragmentShader,
     })
-
-    let geometry = new THREE.PlaneBufferGeometry(2,2)
-    plane2dMesh = new THREE.Mesh(geometry)
-    scene.add(plane2dMesh)
-
-    renderSimpleCamera()
   }
 
 
@@ -166,16 +192,72 @@
 
     controlledCamera.updateProjectionMatrix();
 
-    renderSimpleCamera()
+    animate()
   }
 
-  function renderControlledCamera(){
+  function animate(){
+    let numstr = ""+Math.floor(frame/slomo)
+    numstr = numstr.padStart(6, '0')
+    //numstr = '000001'
+    depthImg = document.getElementById("depth_img")
+    depthImg.src="sequences/chess/seq-01/frame-"+numstr+".depth_exposure_6.png"
+    let texture = new THREE.TextureLoader().load("sequences/chess/seq-01/frame-"+numstr+".depth_exposure_6.png", tex => {
+      texture.type = THREE.FloatType
+      texture.generateMipmaps = false
+      texture.minFilter = texture.magFilter = THREE.NearestFilter
+      texture.needsUpdate = true
+      renderControlledCamera(texture)
+      window.requestAnimationFrame(animate)
+    })
+
+    frame++
+		frame = frame%1000
+  }
+
+  function renderControlledCamera(depthTexture){
+    let poseMatrix = new THREE.Matrix4()
+    readPoseForFrame(Math.floor(frame/slomo), poseMatrix)
+
+		let scaledPoseMatrix = poseMatrix.clone()
+		let m = scaledPoseMatrix;
+		for(var i=0; i<15; i++){
+			m.elements[i] *= 64
+		}
+		camProxyMesh.matrix = m
+
+    debug = false
     renderer.clearColor()
+    plane2dMesh.visible = true
+
+    tsdfMaterial.uniforms['u_camMat'].value = poseMatrix;
+    tsdfMaterial.uniforms['u_depthTexture'].value = depthTexture
+    plane2dMesh.material = tsdfMaterial
+    renderer.setRenderTarget(bufferTexture)
+    renderer.setViewport(bufferTexture.viewport)
+    renderer.render(scene, simpleCamera)
+
+    readRenderTargetPixels(bufferTexture, 0, 0, 512, 512, volumeBuffer, context.RGBA)
+    tsdfTexture3d.data = volumeBuffer
+    tsdfTexture3d.needsUpdate = true
+
+    tsdfTexture3dLinear.data = volumeBuffer
+    tsdfTexture3dLinear.needsUpdate = true
+
+    volumeMaterial.uniforms[ 'u_data'].value = tsdfTexture3dLinear
+
+		depthGridMaterial.uniforms['u_camMat'].value = poseMatrix;
+		depthGridMaterial.uniforms['u_depthTexture'].value = depthTexture
+
+    passThroughMaterial.uniforms['u_tex'].value = depthTexture
+    plane2dMesh.material = passThroughMaterial
+    plane2dMesh.visible = debug
+    volumeMesh.visible = !debug
     renderer.setRenderTarget(null)
     renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
-    renderer.render(scene, controlledCamera)
+    let camera = debug ? simpleCamera : controlledCamera
+    renderer.render(scene, camera)
 
-    window.requestAnimationFrame(renderControlledCamera)
+    stats.update()
   }
 
   function renderSimpleCamera(){
@@ -186,7 +268,7 @@
     renderer.render(scene, simpleCamera)
 
     volumeBuffer = createZeroVolume(16, 16, 16, 4)
-    readRenderTargetPixels(bufferTexture, 0, 0, 64, 64, volumeBuffer)
+    readRenderTargetPixels(bufferTexture, 0, 0, 64, 64, volumeBuffer, context.RGBA)
     tsdfTexture3d.data = volumeBuffer
     tsdfTexture3d.needsUpdate = true
 
@@ -196,6 +278,55 @@
     renderer.render(scene, simpleCamera)
     window.requestAnimationFrame(renderSimpleCamera)
   }
+
+	function setupVolume(volRes, volSize){
+		volumeBuffer = createTestVolume(volRes, volRes, volRes)
+
+    var texture = new THREE.DataTexture3D(volumeBuffer, volRes, volRes, volRes)
+    texture.type = THREE.FloatType;
+    texture.format = THREE.RedFormat;
+    texture.minFilter = texture.magFilter = THREE.LinearFilter
+    //texture.unpackAlignment = 1 // should probably only be used for power of two textures
+    texture.needsUpdate = true
+
+		var shader = THREE.VolumeRenderShader1
+
+		var uniforms = THREE.UniformsUtils.clone(shader.uniforms)
+
+		uniforms[ 'u_data'].value = texture
+		uniforms[ 'u_size'].value.set(volSize, volSize, volSize)
+		uniforms[ 'u_clim'].value.set(0, 1)
+		uniforms[ 'u_renderthreshold'].value = 1.0
+
+		volumeMaterial = new THREE.ShaderMaterial({
+			uniforms: uniforms,
+			vertexShader: shader.vertexShader,
+			fragmentShader: shader.fragmentShader,
+			side: THREE.BackSide
+		})
+	}
+
+	function setupDepthPlaneMaterial(){
+		var shader = THREE.DepthGridShader
+
+		var uniforms = THREE.UniformsUtils.clone(shader.uniforms)
+
+		let poseMatrix = new THREE.Matrix4()
+		readPoseForFrame(Math.floor(frame/slomo), poseMatrix)
+
+		uniforms['u_camMat'].value = poseMatrix;
+    uniforms['u_depthTexture'].value = depthTexture
+		uniforms[ 'u_resx'].value = tex2dSize
+		uniforms[ 'u_resy'].value = tex2dSize
+
+		depthGridMaterial = new THREE.ShaderMaterial({
+			uniforms: uniforms,
+			vertexShader: shader.vertexShader,
+			fragmentShader: shader.fragmentShader,
+			side: THREE.DoubleSide,
+			wireframe: false
+		})
+	}
 
   function createTestVolume(xres, yres, zres,  cres = 1)
   {
@@ -232,7 +363,7 @@
     return buffer
   }
 
-  function readRenderTargetPixels(renderTarget, x, y, width, height, buffer){
+  function readRenderTargetPixels(renderTarget, x, y, width, height, buffer, format = context.RED){
     if ( ! ( renderTarget instanceof THREE.WebGLRenderTarget ) ) {
 
         console.error( 'THREE.WebGLRenderer.readRenderTargetPixels: renderTarget is not THREE.WebGLRenderTarget.' );
@@ -260,7 +391,7 @@
 
         if ( context.checkFramebufferStatus( context.FRAMEBUFFER ) === context.FRAMEBUFFER_COMPLETE ) {
 
-          context.readPixels( x, y, width, height, context.RGBA, context.FLOAT, buffer );
+          context.readPixels( x, y, width, height, format, context.FLOAT, buffer );
 
         } else {
 
@@ -275,6 +406,51 @@
         }
 
       }
+  }
+
+  function readAllPoses(){
+    for(let i=0; i<1000; i++){
+      let numstr = ""+i
+      numstr = numstr.padStart(6, '0')
+      var filestr = "sequences/chess/seq-01/frame-"+numstr+".pose.txt";
+      let matrix = new THREE.Matrix4()
+      readTextFile(filestr, i, matrix)
+      poses[frame] = matrix
+    }
+  }
+
+  function readPoseForFrame(frame, matrix){
+    let numstr = ""+frame
+    numstr = numstr.padStart(6, '0')
+    var filestr = "sequences/chess/seq-01/frame-"+numstr+".pose.txt";
+    readTextFile(filestr, frame, matrix)
+  }
+
+  function readTextFile(file, frame, matrix)
+  {
+      var rawFile = new XMLHttpRequest();
+      rawFile.open("GET", file, false);
+      rawFile.onreadystatechange = function ()
+      {
+          if(rawFile.readyState === 4)
+          {
+              if(rawFile.status === 200 || rawFile.status == 0)
+              {
+                  var allText = rawFile.responseText;
+                  var tokens = allText.trim().split(/[ ]+/)
+                  for(var i=0; i<tokens.length; i++){
+										let val = parseFloat(tokens[i])
+										if(i%4 == 3 && i != 15){
+											val = -val
+										}
+                    matrix.elements[i] = val
+										//console.log(i + " " +tokens[i])
+                  }
+                  matrix.transpose()
+              }
+          }
+      }
+      rawFile.send(null);
   }
 
 	</script>

@@ -11,7 +11,7 @@
 THREE.VolumeRenderShader1 = {
 	uniforms: {
         "u_size": { value: new THREE.Vector3( 1, 1, 1 ) },
-        "u_renderthreshold": { value: 0.5 },
+        "u_renderthreshold": { value: 0.0 },
         "u_clim": { value: new THREE.Vector2( 1, 1 ) },
         "u_data": { value: null }
     },
@@ -77,6 +77,7 @@ THREE.VolumeRenderShader1 = {
 
 
         'void main() {',
+						//'gl_FragColor = vec4(vec3(texture(u_data, vec3(gl_FragCoord) / 1500.0)), 1.0); return;',
             // Normalize clipping plane info
             'vec3 farpos = v_farpos.xyz / v_farpos.w;',
             'vec3 nearpos = v_nearpos.xyz / v_nearpos.w;',
