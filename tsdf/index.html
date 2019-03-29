@@ -17,6 +17,7 @@
 
 	<script src="js/WebGL.js"></script>
   <script src="js/stats.js"></script>
+	<script src="js/PointVolumeCube.js"></script>
 
   <img id="depth_img" width=640 height=360></img>
 
@@ -25,9 +26,15 @@
     document.body.appendChild(WEBGL.getWebGL2ErrorMessage());
   }
 
-	const tex2dSize = 512
+	const volTexRes = 729
+
+	const tex2dSize = volTexRes
 
 	const slomo = 1
+
+	const scale = 32
+
+	const volOffset = new THREE.Vector3(1.5, 1, 3)
 
   var container,
       renderer,
@@ -46,7 +53,6 @@
       volumeBuffer,
       context,
       volumeMesh,
-      volumeBuffer,
       stats,
       frame,
       poses,
@@ -54,7 +60,9 @@
       yellowMaterial,
       volSize,
       volRes,
-			camProxyMesh
+			camProxyMesh,
+			pointVolumeCube,
+			pointVolumeMaterial
 
   init();
 
@@ -78,14 +86,14 @@
 
     var h = 256
     var aspect = window.innerWidth / window.innerHeight
-    controlledCamera = new THREE.OrthographicCamera(-h*aspect/2, h*aspect/2, h/2, -h/2, -100, 1000)
+    controlledCamera = new THREE.OrthographicCamera(-h*aspect/2, h*aspect/2, h/2, -h/2, -1000, 1000)
     controlledCamera.position.set(0,0,1)
 
-    volSize = 64
-    volRes = 64
+    volSize = scale*3
+    volRes = 81
 
     controls = new THREE.OrbitControls( controlledCamera, renderer.domElement)
-    //controls.target.set(volSize/2,volSize/2,volSize/2)
+    controls.target.set(volSize/2,volSize/2,volSize/2)
     controls.minZoom = 0.1
     controls.maxZoom = 2
 
@@ -108,19 +116,30 @@
     //sphere.translate(0, 0, 0)
     //scene.add( sphere );
 
+		setupPointVolumeCube(volRes, volSize)
+
 		setupDepthPlaneMaterial()
 
-		var planeGeometry = new THREE.PlaneBufferGeometry(2, 2, 128, 128)
+		pointVolumeCubeData = createPointVolumeCubeBuffer(volRes, volSize)
+		let positions = pointVolumeCubeData[0]
+		let indices = pointVolumeCubeData[1]
+		var pointVolumeGeometry = new THREE.BufferGeometry()
+		pointVolumeGeometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+		pointVolumeGeometry.setDrawRange(0, positions.length)
+		pointVolumeCube = new THREE.Points(pointVolumeGeometry, pointVolumeMaterial)
+		scene.add(pointVolumeCube)
+
+		var planeGeometry = new THREE.PlaneBufferGeometry(2, 2, 256, 256)
 		var depthPlane = new THREE.Mesh(planeGeometry, depthGridMaterial)
-		depthPlane.scale.set(64,64,64)
-		scene.add(depthPlane)
+		depthPlane.scale.set(scale,scale,scale)
+		//scene.add(depthPlane)
 
 		var camProxyGeometry = new THREE.BoxBufferGeometry(1/16, 1/16, 1/4)
 		camProxyMesh = new THREE.Mesh(camProxyGeometry, yellowMaterial)
 		scene.add(camProxyMesh)
 		camProxyMesh.matrixAutoUpdate = false
 
-		var axesHelper = new THREE.AxesHelper( 64 );
+		var axesHelper = new THREE.AxesHelper( scale );
 		scene.add( axesHelper );
 
     window.addEventListener('resize', onWindowResize, false)
@@ -130,18 +149,20 @@
 
     simpleCamera = new THREE.Camera()
 
-    volumeBuffer = createZeroVolume(volRes, volRes, volRes, 4)
+    volumeBuffer = createTestVolume(volRes, volRes, volRes, 4)
 
     tsdfTexture3d = new THREE.DataTexture3D(volumeBuffer,volRes, volRes, volRes)
     tsdfTexture3d.type = THREE.FloatType;
     tsdfTexture3d.format = THREE.RGBAFormat;
     tsdfTexture3d.minFilter = tsdfTexture3d.magFilter = THREE.NearestFilter
+		tsdfTexture3d.repeat = THREE.ClampToEdgeWrapping
     tsdfTexture3d.needsUpdate = true
 
     tsdfTexture3dLinear = new THREE.DataTexture3D(volumeBuffer,volRes, volRes, volRes)
     tsdfTexture3dLinear.type = THREE.FloatType;
     tsdfTexture3dLinear.format = THREE.RGBAFormat;
     tsdfTexture3dLinear.minFilter = tsdfTexture3dLinear.magFilter = THREE.LinearFilter
+		tsdfTexture3dLinear.repeat = THREE.ClampToEdgeWrapping
     tsdfTexture3dLinear.needsUpdate = true
 
     bufferTexture = new THREE.WebGLRenderTarget( tex2dSize, tex2dSize, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, type: THREE.FloatType, format: THREE.RGBAFormat});
@@ -154,7 +175,6 @@
     uniforms[ 'u_cubewidth'].value = volRes
     uniforms[ 'u_resx'].value = tex2dSize
     uniforms[ 'u_resy'].value = tex2dSize
-    uniforms[ 'u_tsdf'].value = volumeBuffer
 
     tsdfMaterial = new THREE.ShaderMaterial({
       uniforms: uniforms,
@@ -221,7 +241,7 @@
 		let scaledPoseMatrix = poseMatrix.clone()
 		let m = scaledPoseMatrix;
 		for(var i=0; i<15; i++){
-			m.elements[i] *= 64
+			m.elements[i] *= scale
 		}
 		camProxyMesh.matrix = m
 
@@ -236,7 +256,7 @@
     renderer.setViewport(bufferTexture.viewport)
     renderer.render(scene, simpleCamera)
 
-    readRenderTargetPixels(bufferTexture, 0, 0, 512, 512, volumeBuffer, context.RGBA)
+    readRenderTargetPixels(bufferTexture, 0, 0, volTexRes, volTexRes, volumeBuffer, context.RGBA)
     tsdfTexture3d.data = volumeBuffer
     tsdfTexture3d.needsUpdate = true
 
@@ -295,14 +315,31 @@
 
 		uniforms[ 'u_data'].value = texture
 		uniforms[ 'u_size'].value.set(volSize, volSize, volSize)
-		uniforms[ 'u_clim'].value.set(0, 1)
-		uniforms[ 'u_renderthreshold'].value = 1.0
+		uniforms[ 'u_clim'].value.set(0, 3)
+		uniforms[ 'u_renderthreshold'].value = 0.0
 
 		volumeMaterial = new THREE.ShaderMaterial({
 			uniforms: uniforms,
 			vertexShader: shader.vertexShader,
 			fragmentShader: shader.fragmentShader,
 			side: THREE.BackSide
+		})
+	}
+
+	function setupPointVolumeCube(volRes, volSize){
+		var shader = THREE.PointVolumeShader
+
+		var uniforms = THREE.UniformsUtils.clone(shader.uniforms)
+
+		uniforms[ 'u_data'].value = tsdfTexture3d
+		uniforms[ 'u_size'].value = volSize
+		uniforms[ 'u_res'].value = volRes
+
+		pointVolumeMaterial = new THREE.ShaderMaterial({
+			uniforms: uniforms,
+			vertexShader: shader.vertexShader,
+			fragmentShader: shader.fragmentShader,
+			side: THREE.DoubleSide
 		})
 	}
 
@@ -318,6 +355,7 @@
     uniforms['u_depthTexture'].value = depthTexture
 		uniforms[ 'u_resx'].value = tex2dSize
 		uniforms[ 'u_resy'].value = tex2dSize
+
 
 		depthGridMaterial = new THREE.ShaderMaterial({
 			uniforms: uniforms,
@@ -447,6 +485,9 @@
 										//console.log(i + " " +tokens[i])
                   }
                   matrix.transpose()
+									matrix.elements[12] += volOffset.x
+									matrix.elements[13] += volOffset.y
+									matrix.elements[14] += volOffset.z
               }
           }
       }
