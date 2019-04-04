@@ -42,40 +42,52 @@ THREE.TSDFShader = {
 
         'void main() {',
 
+					'const float MAX_WEIGHT = 128.0;',
+
 					'vec2 uv = gl_FragCoord.xy;',
 
 					'vec3 coords3d = get3dCoordinates(uv)*3.0;',
 
-					'vec4 data = texture(u_data, coords3d);',
+					'vec4 data = texture(u_data, coords3d/3.0);',
 					'float depth = getDepth(coords3d);',
 					'float sdf = 0.0;',
+					'float new_value = data.x;',
+					'float new_weight = max(1.0, data.y);',
 
 					'vec3 camPos = (u_camMat*vec4(vec3(0.0), 1.0)).xyz;',
 
-					'if( !isOnEdge(coords3d/3.0)) {',
-						'vec3 camFramePos = getCamFramePos(coords3d);',
-						'if(camFramePos.z > 0.0) {',
-							'gl_FragColor = vec4(vec3(0.0), 1.0);',
-							'return;',
-						'}',
+					'vec3 camFramePos = getCamFramePos(coords3d);',
+					'if(camFramePos.z > 0.0 || isOnEdge(coords3d/3.0) || depth > 30.0) {',
+						'gl_FragColor = data;',
+						'return;',
+					'}',
 
-						'vec3 uvPos = camFramePos/-camFramePos.z;',
-						'vec3 ndcPos = vec3(getCamCoordinates(coords3d), 1.0);',
-						'if(isInFrame(ndcPos.xy)) {',
-							'sdf = -(length(camFramePos)/length(uvPos)- depth);',
+					'vec3 uvPos = camFramePos/-camFramePos.z;',
+					'vec3 ndcPos = vec3(getCamCoordinates(coords3d), 1.0);',
+					'if(isInFrame(ndcPos.xy)) {',
+						'sdf = -(length(camFramePos)/length(uvPos)- depth);',
 
-							'float truncDist = 0.05;',
-							'if(sdf >= -truncDist){',
-	    					'sdf = sdf/truncDist;',
-								'sdf = max(-1.0, min(1.0, sdf));',
-							'}',
+						'float truncDist = 0.25;',
+						'if(sdf >= -truncDist){',
+    					'float new_sdf = sdf/truncDist;',
+							'sdf = sdf/truncDist;',
+							'sdf = max(-1.0, min(1.0, sdf));',
+
+							'float current_sdf = data.x;',
+							'float current_weight = max(1.0, data.y);',
+							'float add_weight = 1.0;',
+							'float updated_sdf = (current_weight * current_sdf +',
+																				'add_weight * new_sdf) /',
+																				'(current_weight  + add_weight);',
+							'new_weight = min(current_weight + add_weight, MAX_WEIGHT);',
+							'new_value = max(-1.0, min(1.0, updated_sdf));',
 						'} else {',
-							'gl_FragColor = vec4(vec3(0.0), 1.0);',
+							'gl_FragColor = vec4(vec3(new_value, new_weight, sdf), 1.0);',
 							'return;',
 						'}',
 					'}',
 
-					'gl_FragColor = vec4(vec3(-sdf), 1.0);',
+					'gl_FragColor = vec4(vec3(new_value, new_weight, sdf), 1.0);',
 
         '}',
 
@@ -117,7 +129,7 @@ THREE.TSDFShader = {
 				' int cy = residue / w;',
 				' residue = residue - cy * w;',
 				' int cx = residue;',
-				' return vec3(cx, cy, cz)/float(u_cubewidth);',
+				' return vec3(cx, cy, cz)/float(u_cubewidth-1);',
 				'}',
 
 				'bool isOnEdge(vec3 coords){',
@@ -125,7 +137,7 @@ THREE.TSDFShader = {
 				'}',
 
 				'bool isInFrame(vec2 coords){',
-				' return coords.x > 0.01 && coords.x < 0.99 && coords.y > 0.01 && coords.y < 0.99;',
+				' return coords.x > 0.0 && coords.x < 1.0 && coords.y > 0.0 && coords.y < 1.0;',
 				'}',
 	].join( '\n' )
 };

@@ -117,7 +117,7 @@ THREE.VolumeRenderShader1 = {
 
         'float sample1(vec3 texcoords) {',
             '/* Sample float value from a 3D texture. Assumes intensity data. */',
-            'return texture(u_data, texcoords.xyz).r;',
+            'return -texture(u_data, texcoords.xyz).r;',
         '}',
 
         'void cast_iso(vec3 start_loc, vec3 step, int nsteps, vec3 view_ray) {',

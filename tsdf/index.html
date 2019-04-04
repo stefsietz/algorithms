@@ -19,14 +19,14 @@
   <script src="js/stats.js"></script>
 	<script src="js/PointVolumeCube.js"></script>
 
-  <img id="depth_img" width=640 height=360></img>
+  <img id="depth_img" width=640 height=480></img>
 
   <script>
   if(WEBGL.isWebGL2Available() === false) {
     document.body.appendChild(WEBGL.getWebGL2ErrorMessage());
   }
 
-	const volTexRes = 729
+	const volTexRes = 1448
 
 	const tex2dSize = volTexRes
 
@@ -82,7 +82,8 @@
     renderer.setPixelRatio( window.devicePixelRatio)
     renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.setClearColor(new THREE.Color(0x0), 1.0)
-    document.body.appendChild(renderer.domElement)
+		let depth_img = document.getElementById('depth_img')
+    document.body.insertBefore(renderer.domElement, depth_img)
 
     var h = 256
     var aspect = window.innerWidth / window.innerHeight
@@ -90,7 +91,7 @@
     controlledCamera.position.set(0,0,1)
 
     volSize = scale*3
-    volRes = 81
+    volRes = 128
 
     controls = new THREE.OrbitControls( controlledCamera, renderer.domElement)
     controls.target.set(volSize/2,volSize/2,volSize/2)
@@ -106,7 +107,7 @@
     geometry.translate( volSize / 2 - 0.5, volSize / 2 - 0.5, volSize / 2 - 0.5)
 
     volumeMesh = new THREE.Mesh(geometry, volumeMaterial)
-    //scene.add(volumeMesh)
+    scene.add(volumeMesh)
     setupCompute(false)
     animate()
     controls.update()
@@ -127,7 +128,7 @@
 		pointVolumeGeometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
 		pointVolumeGeometry.setDrawRange(0, positions.length)
 		pointVolumeCube = new THREE.Points(pointVolumeGeometry, pointVolumeMaterial)
-		scene.add(pointVolumeCube)
+		//scene.add(pointVolumeCube)
 
 		var planeGeometry = new THREE.PlaneBufferGeometry(2, 2, 256, 256)
 		var depthPlane = new THREE.Mesh(planeGeometry, depthGridMaterial)
@@ -149,7 +150,7 @@
 
     simpleCamera = new THREE.Camera()
 
-    volumeBuffer = createTestVolume(volRes, volRes, volRes, 4)
+    volumeBuffer = createZeroVolume(volRes, volRes, volRes, 4)
 
     tsdfTexture3d = new THREE.DataTexture3D(volumeBuffer,volRes, volRes, volRes)
     tsdfTexture3d.type = THREE.FloatType;
@@ -220,8 +221,8 @@
     numstr = numstr.padStart(6, '0')
     //numstr = '000001'
     depthImg = document.getElementById("depth_img")
-    depthImg.src="sequences/chess/seq-01/frame-"+numstr+".depth_exposure_6.png"
-    let texture = new THREE.TextureLoader().load("sequences/chess/seq-01/frame-"+numstr+".depth_exposure_6.png", tex => {
+    depthImg.src="sequences/chess_exp6/frame-"+numstr+".depth_exposure_6.png"
+    let texture = new THREE.TextureLoader().load("sequences/chess_exp6/frame-"+numstr+".depth_exposure_6.png", tex => {
       texture.type = THREE.FloatType
       texture.generateMipmaps = false
       texture.minFilter = texture.magFilter = THREE.NearestFilter
@@ -450,7 +451,7 @@
     for(let i=0; i<1000; i++){
       let numstr = ""+i
       numstr = numstr.padStart(6, '0')
-      var filestr = "sequences/chess/seq-01/frame-"+numstr+".pose.txt";
+      var filestr = "sequences/chess_exp6/frame-"+numstr+".pose.txt";
       let matrix = new THREE.Matrix4()
       readTextFile(filestr, i, matrix)
       poses[frame] = matrix
@@ -460,7 +461,7 @@
   function readPoseForFrame(frame, matrix){
     let numstr = ""+frame
     numstr = numstr.padStart(6, '0')
-    var filestr = "sequences/chess/seq-01/frame-"+numstr+".pose.txt";
+    var filestr = "sequences/chess_exp6/frame-"+numstr+".pose.txt";
     readTextFile(filestr, frame, matrix)
   }
 
